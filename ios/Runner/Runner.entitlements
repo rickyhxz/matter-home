@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Required for Matter device commissioning via MatterSupport.framework -->
+    <!-- Request access at: https://developer.apple.com/contact/request/matter-framework-access -->
+    <key>com.apple.developer.matter.allow-setup-payload</key>
+    <true/>
+</dict>
+</plist>

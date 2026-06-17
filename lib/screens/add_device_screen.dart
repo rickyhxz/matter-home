@@ -4,6 +4,7 @@ import 'package:uuid/uuid.dart';
 import '../models/device.dart';
 import '../models/room.dart';
 import '../providers/home_provider.dart';
+import '../services/matter_service.dart';
 
 const _uuid = Uuid();
 
@@ -22,6 +23,9 @@ class _AddDeviceScreenState extends ConsumerState<AddDeviceScreen> {
   final _brandController = TextEditingController();
   bool _commissioning = false;
   bool _commissioned = false;
+  String? _commissioningError;
+  String? _commissionedDeviceName;
+  String? _commissionedDeviceType;
 
   @override
   void dispose() {
@@ -34,29 +38,76 @@ class _AddDeviceScreenState extends ConsumerState<AddDeviceScreen> {
   void _back() => setState(() => _step--);
 
   Future<void> _startCommissioning() async {
-    setState(() => _commissioning = true);
-    await Future.delayed(const Duration(seconds: 3)); // simulate Matter pairing
+    final rooms = ref.read(roomsProvider);
+    final room = rooms.firstWhere((r) => r.id == _selectedRoomId!, orElse: () => rooms.first);
+
     setState(() {
-      _commissioning = false;
-      _commissioned = true;
+      _commissioning = true;
+      _commissioningError = null;
     });
+
+    final result = await MatterService.commissionDevice(
+      homeName: 'Matter Home',
+      roomName: room.name,
+    );
+
+    if (!mounted) return;
+
+    switch (result) {
+      case CommissioningSuccess(:final deviceName, :final deviceType):
+        setState(() {
+          _commissioning = false;
+          _commissioned = true;
+          _commissionedDeviceName = deviceName;
+          _commissionedDeviceType = deviceType;
+        });
+      case CommissioningFailure(:final message, :final error):
+        setState(() {
+          _commissioning = false;
+          _commissioningError = error == CommissioningError.notEntitled
+              ? 'Matter entitlement not yet approved by Apple.\nRequest it at developer.apple.com/contact/request/matter-framework-access'
+              : error == CommissioningError.userCancelled
+                  ? 'Pairing cancelled.'
+                  : error == CommissioningError.unsupportedPlatform
+                      ? 'Real Matter commissioning requires iOS 16.1+ on a physical device.'
+                      : message;
+        });
+    }
   }
 
   void _finish() {
     if (_selectedType == null || _selectedRoomId == null) return;
+
+    // Prefer name/type returned by native commissioning; fall back to user input.
+    final resolvedName = _nameController.text.trim().isNotEmpty
+        ? _nameController.text.trim()
+        : (_commissionedDeviceName ?? _selectedType!.typeLabel);
+
+    final resolvedType = _resolveType(_commissionedDeviceType) ?? _selectedType!;
+
     final device = Device(
       id: _uuid.v4(),
-      name: _nameController.text.trim().isEmpty ? _selectedType!.typeLabel : _nameController.text.trim(),
-      type: _selectedType!,
+      name: resolvedName,
+      type: resolvedType,
       roomId: _selectedRoomId!,
-      brand: _brandController.text.trim().isEmpty ? 'Unknown' : _brandController.text.trim(),
-      brightness: _selectedType == DeviceType.light ? 1.0 : null,
-      temperature: _selectedType == DeviceType.thermostat ? 22.0 : null,
-      isLocked: _selectedType == DeviceType.lock ? true : null,
+      brand: _brandController.text.trim().isEmpty ? 'Matter' : _brandController.text.trim(),
+      brightness: resolvedType == DeviceType.light ? 1.0 : null,
+      temperature: resolvedType == DeviceType.thermostat ? 22.0 : null,
+      isLocked: resolvedType == DeviceType.lock ? true : null,
     );
     ref.read(devicesProvider.notifier).addDevice(device);
     Navigator.pop(context);
   }
+
+  DeviceType? _resolveType(String? raw) => switch (raw) {
+        'light' => DeviceType.light,
+        'switch' => DeviceType.switch_,
+        'thermostat' => DeviceType.thermostat,
+        'lock' => DeviceType.lock,
+        'sensor' => DeviceType.sensor,
+        'outlet' => DeviceType.outlet,
+        _ => null,
+      };
 
   @override
   Widget build(BuildContext context) {
@@ -100,6 +151,7 @@ class _AddDeviceScreenState extends ConsumerState<AddDeviceScreen> {
                       key: const ValueKey(3),
                       commissioning: _commissioning,
                       commissioned: _commissioned,
+                      error: _commissioningError,
                       onStart: _startCommissioning,
                     ),
                   _ => const SizedBox.shrink(),
@@ -260,9 +312,10 @@ class _NameStep extends StatelessWidget {
 class _CommissionStep extends StatelessWidget {
   final bool commissioning;
   final bool commissioned;
+  final String? error;
   final VoidCallback onStart;
 
-  const _CommissionStep({super.key, required this.commissioning, required this.commissioned, required this.onStart});
+  const _CommissionStep({super.key, required this.commissioning, required this.commissioned, this.error, required this.onStart});
 
   @override
   Widget build(BuildContext context) {
@@ -292,7 +345,7 @@ class _CommissionStep extends StatelessWidget {
             const SizedBox(height: 24),
             Text('Pairing via Matter…', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
-            Text('Scanning for device on your network.', style: TextStyle(color: cs.onSurfaceVariant)),
+            Text('Apple\'s pairing sheet is open — follow the on-screen steps.', style: TextStyle(color: cs.onSurfaceVariant), textAlign: TextAlign.center),
           ],
         ),
       );
@@ -323,12 +376,32 @@ class _CommissionStep extends StatelessWidget {
             ],
           ),
         ),
+        if (error != null) ...[
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: cs.errorContainer,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.warning_amber_rounded, color: cs.onErrorContainer, size: 20),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(error!, style: TextStyle(color: cs.onErrorContainer, fontSize: 13)),
+                ),
+              ],
+            ),
+          ),
+        ],
         const SizedBox(height: 24),
         SizedBox(
           width: double.infinity,
           child: FilledButton.tonal(
             onPressed: onStart,
-            child: const Text('Start pairing'),
+            child: Text(error != null ? 'Try again' : 'Start pairing'),
           ),
         ),
       ],
